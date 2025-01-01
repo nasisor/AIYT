@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Sentiment Analyzer</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <img src="{{ url_for('static', filename='images/logo.png') }}" alt="YouTube Sentiment Analyzer Logo">
+            </div>
+            <h1>YouTube Sentiment Analyzer</h1>
+            <p class="subtitle">Analyze the sentiment of YouTube video comments using AI</p>
+        </header>
+        
+        <form id="searchForm">
+            <div class="search-container">
+                <div class="search-type">
+                    <select id="searchType">
+                        <option value="video">Videos</option>
+                        <option value="channel">Channels</option>
+                    </select>
+                </div>
+                <input type="text" id="searchInput" placeholder="Search for videos or channels...">
+                <button type="submit">Analyze</button>
+            </div>
+        </form>
+
+        <div id="results"></div>
+    </div>
+
+    <template id="videoCardTemplate">
+        <div class="video-card">
+            <div class="video-header">
+                <img src="" alt="" class="thumbnail">
+                <div class="video-info">
+                    <h3 class="title"></h3>
+                    <p class="channel"></p>
+                    <p class="stats"></p>
+                </div>
+            </div>
+            
+            <div class="analysis-container">
+                <div class="sentiment-overview">
+                    <div class="chart-container">
+                        <canvas></canvas>
+                    </div>
+                    <div class="sentiment-score">
+                        <h4>Overall Sentiment</h4>
+                        <div class="score"></div>
+                        <div class="score-description"></div>
+                        <div class="score-bar">
+                            <div class="score-fill"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="engagement-metrics">
+                    <div class="metric">
+                        <h4>Total Comments</h4>
+                        <span class="total-comments"></span>
+                    </div>
+                    <div class="metric">
+                        <h4>Avg. Likes per Comment</h4>
+                        <span class="avg-likes"></span>
+                    </div>
+                </div>
+
+                <div class="comment-examples">
+                    <h4>Representative Comments</h4>
+                    <div class="tabs">
+                        <button class="tab active" data-tab="positive">Positive</button>
+                        <button class="tab" data-tab="negative">Negative</button>
+                        <button class="tab" data-tab="neutral">Neutral</button>
+                    </div>
+                    <div class="comments-container">
+                        <div class="comments positive active"></div>
+                        <div class="comments negative"></div>
+                        <div class="comments neutral"></div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="video-footer">
+                <a href="" target="_blank" class="watch-btn">Watch on YouTube</a>
+                <button class="back-btn" onclick="window.location.reload()">Back to Search</button>
+            </div>
+        </div>
+    </template>
+
+    <template id="channelCardTemplate">
+        <div class="channel-card">
+            <div class="channel-header">
+                <img src="" alt="" class="channel-thumbnail">
+                <div class="channel-info">
+                    <h3 class="title"></h3>
+                    <p class="description"></p>
+                    <div class="channel-stats">
+                        <span class="subscribers"></span>
+                        <span class="videos"></span>
+                        <span class="views"></span>
+                    </div>
+                </div>
+            </div>
+            <div class="channel-footer">
+                <a href="" target="_blank" class="channel-btn">View Channel</a>
+            </div>
+        </div>
+    </template>
+
+    <script>
+        let currentPage = 1;
+        let isLoading = false;
+        let hasMore = true;
+        let lastQuery = '';
+        let nextPageToken = null;
+        let lastChannelId = null;
+
+        // Add this function to check if we should load more
+        function isNearBottom() {
+            return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 1000;
+        }
+
+        // Function to load more results
+        async function loadMoreResults() {
+            if (!lastQuery || isLoading || !hasMore) return;
+            
+            isLoading = true;
+            currentPage++;
+            const searchType = document.getElementById('searchType').value;
+            
+            const bottomSpinner = document.createElement('div');
+            bottomSpinner.className = 'bottom-spinner';
+            document.getElementById('results').appendChild(bottomSpinner);
+            
+            try {
+                const response = await fetch('/search', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: `query=${encodeURIComponent(lastQuery)}&type=${searchType}&page=${currentPage}&next_page_token=${nextPageToken || ''}`
+                });
+                
+                const data = await response.json();
+                bottomSpinner.remove();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                hasMore = data.has_more;
+                nextPageToken = data.next_page_token;
+                
+                // Use the new renderResults function
+                renderResults(data.results, true);
+                
+            } catch (error) {
+                console.error('Error loading more results:', error);
+                bottomSpinner.remove();
+            } finally {
+                isLoading = false;
+            }
+        }
+
+        // Update the form submit handler
+        document.getElementById('searchForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const query = document.getElementById('searchInput').value;
+            const searchType = document.getElementById('searchType').value;
+            const results = document.getElementById('results');
+            
+            if (!query.trim()) {
+                results.innerHTML = '<div class="error">Please enter a search term</div>';
+                return;
+            }
+            
+            // Reset pagination
+            currentPage = 1;
+            hasMore = true;
+            lastQuery = query;
+            nextPageToken = null;
+            
+            showLoading();
+            
+            try {
+                const response = await fetch('/search', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: `query=${encodeURIComponent(query)}&type=${searchType}&page=1`
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || `HTTP error! status: ${response.status}`);
+                }
+                
+                if (data.error) {
+                    results.innerHTML = `<div class="error">${data.error}</div>`;
+                    return;
+                }
+                
+                hasMore = data.has_more;
+                nextPageToken = data.next_page_token;
+                
+                // Use the new renderResults function
+                renderResults(data.results, false);
+                
+            } catch (error) {
+                console.error('Error:', error);
+                results.innerHTML = `<div class="error">
+                    <p>Error analyzing content. Please try again.</p>
+                    <p class="error-details">${error.message}</p>
+                </div>`;
+            } finally {
+                hideLoading();
+            }
+        });
+
+        // Separate function to render videos
+        function renderVideos(videos, append = false) {
+            const results = document.getElementById('results');
+            
+            if (!videos || videos.length === 0) {
+                if (!append) {
+                    results.innerHTML = '<div class="no-results">No videos found matching your search</div>';
+                }
+                return;
+            }
+            
+            if (!append) {
+                results.innerHTML = '';
+            }
+            
+            videos.forEach(video => {
+                try {
+                    const template = document.getElementById('videoCardTemplate');
+                    const card = template.content.cloneNode(true);
+                    
+                    // Set basic video info with fallbacks
+                    card.querySelector('.thumbnail').src = video.thumbnail || '';
+                    card.querySelector('.thumbnail').alt = video.title || 'Video thumbnail';
+                    card.querySelector('.title').textContent = video.title || 'Untitled video';
+                    card.querySelector('.channel').textContent = video.channel_title || 'Unknown channel';
+                    card.querySelector('.watch-btn').href = `https://www.youtube.com/watch?v=${video.id}`;
+                    
+                    // Set statistics with fallbacks
+                    const stats = video.statistics || {};
+                    const statsText = `${Number(stats.viewCount || 0).toLocaleString()} views • ${Number(stats.likeCount || 0).toLocaleString()} likes`;
+                    card.querySelector('.stats').textContent = statsText;
+                    
+                    // Set sentiment score with fallbacks
+                    const score = video.sentiment?.sentiment_score || 0;
+                    const scoreElement = card.querySelector('.score');
+                    scoreElement.textContent = `${score}/100`;
+                    scoreElement.className = `score ${score >= 60 ? 'positive' : score <= 40 ? 'negative' : 'neutral'}`;
+                    
+                    // Add description and score bar
+                    card.querySelector('.score-description').textContent = video.sentiment?.sentiment_description || 'No sentiment data';
+                    const scoreFill = card.querySelector('.score-fill');
+                    scoreFill.style.width = `${score}%`;
+                    scoreFill.style.backgroundColor = score >= 60 ? 'var(--success-color)' : 
+                                                         score <= 40 ? 'var(--danger-color)' : 
+                                                         'var(--warning-color)';
+                    
+                    // Set metrics with fallbacks
+                    card.querySelector('.total-comments').textContent = video.sentiment?.total_comments || 0;
+                    card.querySelector('.avg-likes').textContent = 
+                        (video.sentiment?.engagement_metrics?.avg_likes_per_comment || 0).toFixed(1);
+                    
+                    // Set example comments with error handling
+                    ['positive', 'negative', 'neutral'].forEach(type => {
+                        const container = card.querySelector(`.comments.${type}`);
+                        const examples = video.sentiment?.example_comments?.[type] || [];
+                        container.innerHTML = examples.length > 0 ? 
+                            examples.map(comment => `
+                                <div class="comment">
+                                    <p>${comment.text || 'No comment text'}</p>
+                                    <div class="comment-meta">
+                                        <span>${comment.likes || 0} likes</span>
+                                        <span>Score: ${(comment.score || 0).toFixed(2)}</span>
+                                    </div>
+                                </div>
+                            `).join('') : '<p class="no-examples">No examples found</p>';
+                    });
+                    
+                    const cardElement = document.createElement('div');
+                    cardElement.appendChild(card);
+                    
+                    // Setup tabs before appending to results
+                    setupTabs(cardElement);
+                    
+                    // Append the actual card
+                    results.appendChild(cardElement.firstElementChild);
+                } catch (cardError) {
+                    console.error('Error creating video card:', cardError);
+                }
+            });
+        }
+
+        function setupTabs(card) {
+            // Get the actual card element, not the wrapper
+            const cardElement = card.firstElementChild || card;
+            
+            const tabButtons = cardElement.querySelectorAll('.tab');
+            const commentSections = cardElement.querySelectorAll('.comments');
+            
+            tabButtons.forEach(button => {
+                button.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const type = button.dataset.tab;
+                    
+                    // Remove active class from all buttons and sections
+                    tabButtons.forEach(btn => btn.classList.remove('active'));
+                    commentSections.forEach(section => section.classList.remove('active'));
+                    
+                    // Add active class to clicked button and corresponding section
+                    button.classList.add('active');
+                    const activeSection = cardElement.querySelector(`.comments.${type}`);
+                    if (activeSection) {
+                        activeSection.classList.add('active');
+                    }
+                });
+            });
+        }
+
+        // Update the loading state creation
+        function showLoading() {
+            const overlay = document.createElement('div');
+            overlay.className = 'loading-overlay';
+            
+            const spinner = document.createElement('div');
+            spinner.className = 'loading-spinner';
+            
+            overlay.appendChild(spinner);
+            document.body.appendChild(overlay);
+        }
+
+        function hideLoading() {
+            const overlay = document.querySelector('.loading-overlay');
+            if (overlay) {
+                overlay.remove();
+            }
+        }
+
+        function renderResults(results, append = false) {
+            const resultsDiv = document.getElementById('results');
+            
+            if (!results || results.length === 0) {
+                if (!append) {
+                    resultsDiv.innerHTML = '<div class="no-results">No results found</div>';
+                }
+                return;
+            }
+            
+            if (!append) {
+                resultsDiv.innerHTML = '';
+            }
+            
+            results.forEach(result => {
+                if (result.type === 'video') {
+                    renderVideo(result, resultsDiv);
+                } else if (result.type === 'channel') {
+                    renderChannel(result, resultsDiv);
+                }
+            });
+        }
+
+        function renderChannel(channel, container) {
+            const template = document.getElementById('channelCardTemplate');
+            const card = template.content.cloneNode(true);
+            
+            card.querySelector('.channel-thumbnail').src = channel.thumbnail;
+            card.querySelector('.title').textContent = channel.title;
+            card.querySelector('.description').textContent = channel.description;
+            
+            const stats = channel.statistics;
+            card.querySelector('.subscribers').textContent = 
+                `${Number(stats.subscriberCount || 0).toLocaleString()} subscribers`;
+            card.querySelector('.videos').textContent = 
+                `${Number(stats.videoCount || 0).toLocaleString()} videos`;
+            card.querySelector('.views').textContent = 
+                `${Number(stats.viewCount || 0).toLocaleString()} views`;
+            
+            // Update the button to trigger channel videos fetch
+            const viewChannelBtn = card.querySelector('.channel-btn');
+            viewChannelBtn.href = '#';
+            viewChannelBtn.addEventListener('click', async (e) => {
+                e.preventDefault();
+                showLoading();
+                
+                // Reset pagination for channel videos
+                currentPage = 1;
+                hasMore = true;
+                nextPageToken = null;
+                lastChannelId = channel.id;  // Store channel ID for load more
+                
+                try {
+                    await loadChannelVideos(channel.id);
+                    // Add Load More button if there are more videos
+                    if (hasMore) {
+                        addLoadMoreButton();
+                    }
+                } catch (error) {
+                    console.error('Error fetching channel videos:', error);
+                    container.innerHTML = `<div class="error">
+                        <p>Error fetching channel videos. Please try again.</p>
+                        <p class="error-details">${error.message}</p>
+                    </div>`;
+                } finally {
+                    hideLoading();
+                }
+            });
+            
+            container.appendChild(card);
+        }
+
+        // Add new function to create and handle Load More button
+        function addLoadMoreButton() {
+            // Remove existing button if any
+            const existingButton = document.querySelector('.load-more-btn');
+            if (existingButton) {
+                existingButton.remove();
+            }
+            
+            if (hasMore && lastChannelId) {
+                const loadMoreBtn = document.createElement('button');
+                loadMoreBtn.className = 'load-more-btn';
+                loadMoreBtn.textContent = 'Load More Videos';
+                loadMoreBtn.addEventListener('click', async () => {
+                    if (!isLoading) {
+                        loadMoreBtn.disabled = true;
+                        loadMoreBtn.textContent = 'Loading...';
+                        await loadChannelVideos(lastChannelId, true);
+                        loadMoreBtn.disabled = false;
+                        loadMoreBtn.textContent = 'Load More Videos';
+                        
+                        // Remove button if no more videos
+                        if (!hasMore) {
+                            loadMoreBtn.remove();
+                        }
+                    }
+                });
+                document.getElementById('results').appendChild(loadMoreBtn);
+            }
+        }
+
+        // Add new function to load channel videos
+        async function loadChannelVideos(channelId, append = false) {
+            if (isLoading) return;
+            isLoading = true;
+            
+            try {
+                if (!append) {
+                    showLoading();
+                    // Clear previous results when loading a new channel
+                    document.getElementById('results').innerHTML = '';
+                } else {
+                    // Show bottom spinner for infinite scroll
+                    const bottomSpinner = document.createElement('div');
+                    bottomSpinner.className = 'bottom-spinner';
+                    document.getElementById('results').appendChild(bottomSpinner);
+                }
+                
+                const response = await fetch('/channel_videos', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: `channel_id=${channelId}&page_token=${nextPageToken || ''}`
+                });
+                
+                const data = await response.json();
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                hasMore = data.has_more;
+                nextPageToken = data.next_page_token;
+                
+                // Render the videos
+                renderVideos(data.videos, append);
+                
+                // Add Load More button if there are more videos
+                if (hasMore) {
+                    addLoadMoreButton();
+                }
+                
+            } catch (error) {
+                throw error;
+            } finally {
+                isLoading = false;
+                if (!append) {
+                    hideLoading();
+                } else {
+                    // Remove bottom spinner
+                    const bottomSpinner = document.querySelector('.bottom-spinner');
+                    if (bottomSpinner) bottomSpinner.remove();
+                }
+            }
+        }
+
+        // Add this helper function to clean text
+        function cleanText(text) {
+            if (!text) return '';
+            return text
+                .replace(/&quot;/g, '"')
+                .replace(/&amp;/g, '&')
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&#39;/g, "'")
+                .replace(/&nbsp;/g, ' ');
+        }
+
+        // Add renderVideo function
+        function renderVideo(video, container) {
+            const template = document.getElementById('videoCardTemplate');
+            const card = template.content.cloneNode(true);
+            
+            // Set basic video info with cleaned text
+            card.querySelector('.thumbnail').src = video.thumbnail;
+            card.querySelector('.thumbnail').alt = cleanText(video.title);
+            card.querySelector('.title').textContent = cleanText(video.title);
+            card.querySelector('.channel').textContent = cleanText(video.channel_title);
+            card.querySelector('.watch-btn').href = `https://www.youtube.com/watch?v=${video.id}`;
+            
+            // Set statistics
+            const stats = video.statistics || {};
+            const statsText = `${Number(stats.viewCount || 0).toLocaleString()} views • ${Number(stats.likeCount || 0).toLocaleString()} likes`;
+            card.querySelector('.stats').textContent = statsText;
+            
+            // Set sentiment data if available
+            if (video.sentiment) {
+                const score = video.sentiment.sentiment_score || 0;
+                const scoreElement = card.querySelector('.score');
+                scoreElement.textContent = `${score}/100`;
+                scoreElement.className = `score ${score >= 60 ? 'positive' : score <= 40 ? 'negative' : 'neutral'}`;
+                
+                card.querySelector('.score-description').textContent = video.sentiment.sentiment_description || 'No sentiment data';
+                const scoreFill = card.querySelector('.score-fill');
+                scoreFill.style.width = `${score}%`;
+                scoreFill.style.backgroundColor = score >= 60 ? 'var(--success-color)' : 
+                                                score <= 40 ? 'var(--danger-color)' : 
+                                                'var(--warning-color)';
+                
+                // Set metrics
+                card.querySelector('.total-comments').textContent = video.sentiment.total_comments || 0;
+                card.querySelector('.avg-likes').textContent = 
+                    (video.sentiment.engagement_metrics?.avg_likes_per_comment || 0).toFixed(1);
+                
+                // Set example comments
+                setupComments(card, video.sentiment.example_comments);
+            }
+            
+            const cardElement = document.createElement('div');
+            cardElement.appendChild(card);
+            setupTabs(cardElement);
+            container.appendChild(cardElement.firstElementChild);
+        }
+
+        // Update setupComments to clean comment text
+        function setupComments(card, examples) {
+            ['positive', 'negative', 'neutral'].forEach(type => {
+                const container = card.querySelector(`.comments.${type}`);
+                const commentsList = examples?.[type] || [];
+                container.innerHTML = commentsList.length > 0 ? 
+                    commentsList.map(comment => `
+                        <div class="comment">
+                            <p>${cleanText(comment.text || 'No comment text')}</p>
+                            <div class="comment-meta">
+                                <span>${comment.likes || 0} likes</span>
+                                <span>Score: ${(comment.score || 0).toFixed(2)}</span>
+                            </div>
+                        </div>
+                    `).join('') : '<p class="no-examples">No examples found</p>';
+            });
+        }
+    </script>
+</body>
+</html> 
